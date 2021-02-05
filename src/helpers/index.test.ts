@@ -17,7 +17,7 @@ function createDirentMock(name: string, isDir = false): fs.Dirent {
 
 describe("Walk Sync function", () => {
   test("returns list of file paths", () => {
-    const readdirMock = jest.spyOn<any, any>(fs, "readdirSync");
+    const readdirMock = jest.spyOn(fs, "readdirSync");
 
     readdirMock.mockImplementationOnce(() => {
       return [createDirentMock("index.html"), createDirentMock("dist", true)];

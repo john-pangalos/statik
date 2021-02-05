@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
-import { createStatikFiles, walkSync, Config } from "../helpers";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { createStatikFiles, walkSync, Config } from "../helpers";
 import {
   CloudFrontClient,
   CreateDistributionCommand,
@@ -14,7 +14,7 @@ import {
 import { getType } from "mime";
 import { v4 as uuid } from "uuid";
 
-async function uploadFiles(config: Config): Promise<void> {
+async function uploadFiles(config: Config, id: string): Promise<void> {
   const client = new S3Client({});
   const filePrefix = "build";
 
@@ -24,8 +24,8 @@ async function uploadFiles(config: Config): Promise<void> {
     await client.send(
       new PutObjectCommand({
         ACL: "public-read",
-        Bucket: config.buckets.deploy,
-        Key: file.replace(`${filePrefix}/`, ""),
+        Bucket: config.buckets.preview,
+        Key: file.replace(filePrefix, id),
         Body: readFileSync(file),
         ContentType: getType(file) ?? undefined,
       })
@@ -36,13 +36,17 @@ async function uploadFiles(config: Config): Promise<void> {
   console.log("Upload complete!");
 }
 
-async function invalidateCache(config: Config) {
+async function invalidateCache(config: Config, id: string) {
   if (config.cloudFront === undefined) return;
+
+  const currDist = config.preview?.distributions?.find(
+    (dist) => dist.previewId === id
+  );
 
   console.log("Invalidating cache");
   const cloudFront = new CloudFrontClient({});
   const invalidateReq = new CreateInvalidationCommand({
-    DistributionId: config.cloudFront.cloudFrontId,
+    DistributionId: currDist?.cloudFrontId,
     InvalidationBatch: {
       CallerReference: new Date().getTime().toString(),
       Paths: {
@@ -63,9 +67,10 @@ async function createCachePolicy(
 
   const cachePolicyReq = new CreateCachePolicyCommand({
     CachePolicyConfig: {
-      Name: config.buckets.deploy,
+      Name: config.buckets.preview,
       Comment: "",
       MinTTL: 0,
+      MaxTTL: 0,
     },
   });
 
@@ -73,6 +78,7 @@ async function createCachePolicy(
   cloudFront.destroy();
   return cacheRes;
 }
+
 async function createOriginAccessIdentity(): Promise<CreateCloudFrontOriginAccessIdentityCommandOutput> {
   console.log("Creating Access Identity");
   const cloudFront = new CloudFrontClient({});
@@ -98,10 +104,10 @@ function errorResponse(errorCode: number) {
   };
 }
 
-async function createDistribution({
-  cloudFront,
-  buckets: { deploy },
-}: Config): Promise<CreateDistributionCommandOutput> {
+async function createDistribution(
+  { preview, buckets }: Config,
+  id: string
+): Promise<CreateDistributionCommandOutput> {
   console.log("Creating Cloud Front");
   const client = new CloudFrontClient({});
   const originId = uuid();
@@ -112,16 +118,17 @@ async function createDistribution({
         Items: [
           {
             Id: originId,
-            DomainName: `${deploy}.s3.eu-west-1.amazonaws.com`,
+            DomainName: `${buckets.preview}.s3.eu-west-1.amazonaws.com`,
+            OriginPath: `/${id}`,
             S3OriginConfig: {
-              OriginAccessIdentity: `origin-access-identity/cloudfront/${cloudFront?.originAccessIdentityId}`,
+              OriginAccessIdentity: `origin-access-identity/cloudfront/${preview?.originAccessIdentityId}`,
             },
           },
         ],
       },
       CallerReference: new Date().getTime().toString(),
       DefaultCacheBehavior: {
-        CachePolicyId: cloudFront?.cachePolicyId,
+        CachePolicyId: preview?.cachePolicyId,
         TargetOriginId: originId,
         ViewerProtocolPolicy: "redirect-to-https",
       },
@@ -143,33 +150,45 @@ async function createDistribution({
   return cloudFrontRes;
 }
 
-export default async function (): Promise<void> {
+export default async function (id: string): Promise<void> {
   const data = readFileSync("./.statik/config.json");
   const config: Config = JSON.parse(data.toString());
-  await uploadFiles(config);
+  await uploadFiles(config, id);
 
-  if (config.cloudFront !== undefined) {
-    await invalidateCache(config);
+  if (
+    config.preview?.distributions?.find((dist) => dist.previewId === id) !==
+    undefined
+  ) {
+    await invalidateCache(config, id);
     return;
   }
 
-  config.cloudFront = {};
+  if (config.preview === undefined) config.preview = {};
+  if (config.preview.distributions === undefined)
+    config.preview.distributions = [];
 
-  const cacheRes = await createCachePolicy(config);
-  if (cacheRes.CachePolicy?.Id === undefined)
-    throw new Error("Could not create cache policy");
-  config.cloudFront.cachePolicyId = cacheRes.CachePolicy.Id;
+  if (config.preview.cachePolicyId === undefined) {
+    const cacheRes = await createCachePolicy(config);
+    if (cacheRes.CachePolicy?.Id === undefined)
+      throw new Error("Could not create cache policy");
+    config.preview.cachePolicyId = cacheRes.CachePolicy.Id;
+  }
 
-  const identityRes = await createOriginAccessIdentity();
-  if (identityRes.CloudFrontOriginAccessIdentity?.Id === undefined)
-    throw new Error("Could not create origin access identity");
-  config.cloudFront.originAccessIdentityId =
-    identityRes.CloudFrontOriginAccessIdentity.Id;
+  if (config.preview.originAccessIdentityId === undefined) {
+    const identityRes = await createOriginAccessIdentity();
+    if (identityRes.CloudFrontOriginAccessIdentity?.Id === undefined)
+      throw new Error("Could not create origin access identity");
+    config.preview.originAccessIdentityId =
+      identityRes.CloudFrontOriginAccessIdentity.Id;
+  }
 
-  const cloudFrontRes = await createDistribution(config);
+  const cloudFrontRes = await createDistribution(config, id);
   if (cloudFrontRes.Distribution?.Id === undefined)
     throw new Error("Could not create cloud front distribution");
-  config.cloudFront.cloudFrontId = cloudFrontRes.Distribution.Id;
+  config.preview.distributions.push({
+    previewId: id,
+    cloudFrontId: cloudFrontRes.Distribution.Id,
+  });
 
   console.log(`https://${cloudFrontRes.Distribution.DomainName}`);
   createStatikFiles(config);
