@@ -1,6 +1,12 @@
 import { readFileSync } from "fs";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import { createStatikFiles, walkSync, Config } from "../helpers";
+import {
+  createStatikFiles,
+  walkSync,
+  Config,
+  asyncPoll,
+  AsyncData,
+} from "../helpers";
 import {
   CloudFrontClient,
   CreateDistributionCommand,
@@ -10,9 +16,12 @@ import {
   CreateCachePolicyCommandOutput,
   CreateCloudFrontOriginAccessIdentityCommandOutput,
   CreateDistributionCommandOutput,
+  GetDistributionCommand,
+  GetDistributionCommandOutput,
 } from "@aws-sdk/client-cloudfront";
 import { getType } from "mime";
 import { v4 as uuid } from "uuid";
+import ora from "ora";
 
 async function uploadFiles(config: Config, id: string): Promise<void> {
   const client = new S3Client({});
@@ -183,7 +192,33 @@ export default async function (id: string): Promise<void> {
   }
 
   const cloudFrontRes = await createDistribution(config, id);
-  if (cloudFrontRes.Distribution?.Id === undefined)
+  const spinner = ora("Waiting for cloudfront to deploy").start();
+  const pollFunc = async (): Promise<
+    AsyncData<CreateDistributionCommandOutput>
+  > => {
+    try {
+      const client = new CloudFrontClient({});
+      const statusRes = await client.send(
+        new GetDistributionCommand({
+          Id: cloudFrontRes.Distribution?.Id,
+        })
+      );
+      if (statusRes.Distribution?.Status == "Deployed")
+        return Promise.resolve({ done: true });
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    return Promise.resolve({
+      done: false,
+    });
+  };
+
+  await asyncPoll(pollFunc, 5000, 900 * 1000);
+  spinner.stop();
+  spinner.succeed();
+
+  if (cloudFrontRes?.Distribution?.Id === undefined)
     throw new Error("Could not create cloud front distribution");
   config.preview.distributions.push({
     previewId: id,

@@ -1,6 +1,10 @@
 import { writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { Config } from "./types";
+
+export * from "./polling";
+export * from "./types";
+
 export function walkSync(currentDirPath: string): Array<string> {
   return readdirSync(currentDirPath, { withFileTypes: true }).reduce<string[]>(
     (acc, dirent) => {
@@ -17,5 +21,3 @@ export function createStatikFiles(config: Config): void {
     flag: "w",
   });
 }
-
-export * from "./types";
