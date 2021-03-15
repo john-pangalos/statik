@@ -3,18 +3,18 @@
     "target": "es2020",
     "module": "commonjs",
     "outDir": "./dist",
-    "rootDir": "./",
+    "baseUrl": "./src/",
 
-    "declaration": true,
+    // "declaration": true,
     "removeComments": true,
     "strict": true,
     "noImplicitAny": true,
     "alwaysStrict": true,
     "moduleResolution": "node",
 
-    "sourceMap": true,
+    // "sourceMap": true,
     "esModuleInterop": true,
-    "skipLibCheck": true,
+    // "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   }
